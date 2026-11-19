@@ -1,0 +1,20 @@
+{
+  "name": "flags-game",
+  "version": "1.0.0",
+  "description": "لعبة أعلام الدول أونلاين متعددة اللاعبين - Node.js + WebSocket",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test",
+    "validate-data": "node scripts/validate-data.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "postinstall": "node scripts/copy-flags.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "flag-icons": "7.3.2",
+    "ws": "8.18.0"
+  }
+}

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: flags-game
+    env: node
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000

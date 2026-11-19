@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="dark" data-font="medium">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="لعبة أعلام الدول — اختبر معرفتك بأعلام العالم مع أصدقائك">
+  <meta name="theme-color" content="#0a1128">
+  <title>أعلام الدول</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app" data-screen="home">
+    <header class="app-header">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">⚑</span>
+        <h1 class="app-title">أعلام الدول</h1>
+      </div>
+      <div class="header-actions">
+        <span id="conn-dot" class="conn-dot bad" role="status" aria-label="حالة الاتصال" title="حالة الاتصال"></span>
+        <button type="button" id="btn-sound" class="btn btn-icon" aria-pressed="false">تشغيل الصوت</button>
+        <button type="button" id="btn-theme" class="btn btn-icon">الوضع الفاتح</button>
+      </div>
+    </header>
+
+    <div id="reconnect-banner" class="reconnect-banner" hidden role="alert"></div>
+
+    <main>
+      <!-- ============ الرئيسية ============ -->
+      <section id="screen-home" class="screen active" aria-label="الرئيسية">
+        <p class="tagline">اختبر معرفتك بأعلام العالم وتحدَّ أصدقاءك</p>
+        <p class="howto">شاهد العلم واختر الدولة الصحيحة قبل انتهاء الوقت. إجابة أسرع تعني نقاطاً أكثر. يمكنك اللعب مع أصدقائك في غرفة واحدة أو التدرب وحدك.</p>
+
+        <label class="field-label" for="player-name">اسمك</label>
+        <input type="text" id="player-name" class="input" placeholder="اكتب اسمك هنا" maxlength="24" autocomplete="nickname">
+
+        <div class="home-actions">
+          <button type="button" id="btn-create" class="btn btn-primary btn-block">إنشاء غرفة</button>
+
+          <div class="join-row">
+            <label class="field-label sr-only" for="join-code">رمز الغرفة</label>
+            <input type="text" id="join-code" class="input" placeholder="رمز الغرفة — مثال: AB12CD" maxlength="12" autocomplete="off">
+            <button type="button" id="btn-join" class="btn btn-secondary">الانضمام إلى غرفة</button>
+          </div>
+
+          <button type="button" id="btn-solo" class="btn btn-block">تدريب فردي</button>
+          <button type="button" id="btn-daily" class="btn btn-block">تحدي اليوم</button>
+
+          <div class="local-row">
+            <label class="field-label" for="local-count">عدد اللاعبين</label>
+            <select id="local-count" class="input">
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+            <button type="button" id="btn-local" class="btn btn-block">وضع محلي (جهاز واحد)</button>
+          </div>
+
+          <button type="button" id="btn-stats" class="btn btn-block btn-ghost">الإحصائيات والتصنيف</button>
+        </div>
+
+        <div class="pref-row">
+          <label class="field-label" for="font-size">حجم الخط</label>
+          <select id="font-size" class="input">
+            <option value="small">صغير</option>
+            <option value="medium">متوسط</option>
+            <option value="large">كبير</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- ============ الغرفة ============ -->
+      <section id="screen-lobby" class="screen" hidden aria-label="الغرفة">
+        <h2>الغرفة</h2>
+        <div class="room-code-box">
+          <span class="room-code-label">رمز الغرفة</span>
+          <strong id="room-code" class="room-code">—</strong>
+          <span id="room-number" class="room-number"></span>
+          <div class="room-code-actions">
+            <button type="button" id="btn-copy-code" class="btn btn-small">نسخ الرمز</button>
+            <button type="button" id="btn-share-room" class="btn btn-small">مشاركة الغرفة</button>
+          </div>
+        </div>
+
+        <h3>اللاعبون</h3>
+        <ul id="player-list" class="player-list"></ul>
+        <p class="muted" id="lobby-waiting">بانتظار اللاعبين…</p>
+
+        <h3>إعدادات اللعبة</h3>
+        <form id="settings-panel" class="settings-panel">
+          <div class="settings-grid">
+            <label class="field">عدد الأعلام
+              <select id="set-flagCount" class="input">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+                <option value="195">195</option>
+                <option value="custom">مخصص</option>
+              </select>
+            </label>
+            <label class="field">عدد مخصص
+              <input type="number" id="set-flagCount-custom" class="input" min="5" max="195" value="10">
+            </label>
+            <label class="field">أقصى عدد للاعبين
+              <select id="set-maxPlayers" class="input">
+                <option value="2">2</option>
+                <option value="4">4</option>
+                <option value="6">6</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+              </select>
+            </label>
+            <label class="field">الوضع
+              <select id="set-mode" class="input">
+                <option value="classic">كلاسيكي</option>
+                <option value="buzzer">جرس (من يضغط أولاً يجيب)</option>
+                <option value="turns">بالأدوار</option>
+                <option value="team">فرق</option>
+              </select>
+            </label>
+            <label class="field">طريقة الإجابة
+              <select id="set-answerMode" class="input">
+                <option value="choice">اختيارات</option>
+                <option value="typing">كتابة</option>
+                <option value="mixed">مختلط</option>
+              </select>
+            </label>
+            <label class="field">نظام النقاط
+              <select id="set-scoring" class="input">
+                <option value="classic">كلاسيكي (100 + مكافأة السرعة)</option>
+                <option value="streak">متتاليات (مكافأة السلسلة)</option>
+                <option value="fixed">ثابت (100 نقطة)</option>
+              </select>
+            </label>
+            <label class="field">مدة السؤال (ثوانٍ)
+              <select id="set-durationSec" class="input">
+                <option value="10">10</option>
+                <option value="15" selected>15</option>
+                <option value="20">20</option>
+                <option value="30">30</option>
+              </select>
+            </label>
+            <label class="field">نوع السؤال
+              <select id="set-answerType" class="input">
+                <option value="country">اسم الدولة</option>
+                <option value="capital">العاصمة</option>
+                <option value="mixed">مختلط</option>
+              </select>
+            </label>
+            <label class="field">الصعوبة
+              <select id="set-difficulty" class="input">
+                <option value="easy">سهل</option>
+                <option value="medium">متوسط</option>
+                <option value="hard">صعب</option>
+                <option value="mixed" selected>مختلط</option>
+              </select>
+            </label>
+            <label class="field">تلميحات
+              <select id="set-hint" class="input">
+                <option value="none">بدون</option>
+                <option value="firstLetter">الحرف الأول</option>
+                <option value="continent">القارة</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="check-group">
+            <legend>القارات</legend>
+            <label class="check"><input type="checkbox" name="continent" value="africa"> أفريقيا</label>
+            <label class="check"><input type="checkbox" name="continent" value="asia"> آسيا</label>
+            <label class="check"><input type="checkbox" name="continent" value="europe"> أوروبا</label>
+            <label class="check"><input type="checkbox" name="continent" value="north-america"> أمريكا الشمالية</label>
+            <label class="check"><input type="checkbox" name="continent" value="south-america"> أمريكا الجنوبية</label>
+            <label class="check"><input type="checkbox" name="continent" value="oceania"> أوقيانوسيا</label>
+          </fieldset>
+
+          <fieldset class="check-group">
+            <legend>أنواع الأسئلة</legend>
+            <label class="check"><input type="checkbox" name="questionType" value="flagToCountry" checked> علم ← دولة</label>
+            <label class="check"><input type="checkbox" name="questionType" value="countryToFlag"> دولة ← علم</label>
+            <label class="check"><input type="checkbox" name="questionType" value="capital"> العاصمة</label>
+            <label class="check"><input type="checkbox" name="questionType" value="continent"> القارة</label>
+          </fieldset>
+
+          <div class="check-list">
+            <label class="check"><input type="checkbox" id="set-arabOnly"> الدول العربية فقط</label>
+            <label class="check"><input type="checkbox" id="set-similarOnly"> أعلام متشابهة فقط</label>
+            <label class="check"><input type="checkbox" id="set-rareOnly"> أعلام نادرة فقط</label>
+            <label class="check"><input type="checkbox" id="set-negativePoints"> خصم نقاط عند الخطأ</label>
+            <label class="check"><input type="checkbox" id="set-lateJoin" checked> السماح بالانضمام المتأخر</label>
+          </div>
+
+          <label class="field">كلمة مرور الغرفة (اختياري)
+            <input type="password" id="set-password" class="input" placeholder="اتركها فارغة لغرفة مفتوحة" autocomplete="off">
+          </label>
+          <label class="field">البذرة (Seed)
+            <input type="text" id="set-seed" class="input" placeholder="عشوائي" autocomplete="off">
+          </label>
+          <p id="available-flags" class="muted"></p>
+        </form>
+
+        <div class="lobby-actions">
+          <button type="button" id="btn-start" class="btn btn-primary btn-block">بدء اللعبة</button>
+          <button type="button" id="btn-leave-lobby" class="btn btn-block btn-danger-outline">مغادرة الغرفة</button>
+        </div>
+      </section>
+
+      <!-- ============ اللعب ============ -->
+      <section id="screen-play" class="screen" hidden aria-label="اللعب">
+        <div class="play-top">
+          <div id="timer-ring" class="timer-ring" role="timer" aria-label="الوقت المتبقي">
+            <svg viewBox="0 0 120 120" width="72" height="72" aria-hidden="true">
+              <circle class="track" cx="60" cy="60" r="54"></circle>
+              <circle class="progress" cx="60" cy="60" r="54"></circle>
+            </svg>
+            <span id="timer-num" class="timer-num">15</span>
+          </div>
+          <div id="scoreboard" class="scoreboard" aria-label="لوحة النقاط"></div>
+        </div>
+
+        <div id="countdown" class="countdown" hidden aria-hidden="true">3</div>
+
+        <p id="question-prompt" class="question-prompt">ما هذه الدولة؟</p>
+
+        <div class="flag-wrap">
+          <img id="flag-img" class="flag-img" src="" alt="علم الدولة" draggable="false">
+        </div>
+
+        <div id="hint-area" class="hint-area" aria-live="polite"></div>
+
+        <div id="options" class="options" role="group" aria-label="خيارات الإجابة"></div>
+
+        <div id="typing-wrap" class="typing-wrap" hidden>
+          <label class="field-label sr-only" for="answer-input">اكتب اسم الدولة…</label>
+          <input type="text" id="answer-input" class="input" placeholder="اكتب اسم الدولة…" autocomplete="off">
+          <button type="button" id="btn-answer-submit" class="btn btn-primary">إرسال الإجابة</button>
+        </div>
+
+        <div id="reveal-info" class="reveal-info" hidden>
+          <p><strong>الإجابة الصحيحة: </strong><span id="reveal-answer"></span></p>
+          <p><strong>العاصمة: </strong><span id="reveal-capital"></span></p>
+          <p><strong>القارة: </strong><span id="reveal-continent"></span></p>
+        </div>
+
+        <div id="buzz-row" class="buzz-row" hidden>
+          <button type="button" class="btn buzz-btn" data-player="0">الجرس — لاعب 1</button>
+          <button type="button" class="btn buzz-btn" data-player="1">الجرس — لاعب 2</button>
+          <button type="button" class="btn buzz-btn" data-player="2">الجرس — لاعب 3</button>
+          <button type="button" class="btn buzz-btn" data-player="3">الجرس — لاعب 4</button>
+          <p class="muted">مفاتيح الجرس: Q / P / Z / M</p>
+        </div>
+
+        <div class="play-actions">
+          <button type="button" id="btn-skip-vote" class="btn btn-small">تصويت للتخطي</button>
+          <button type="button" id="btn-skip-flag" class="btn btn-small">تخطي العلم</button>
+          <button type="button" id="btn-pause" class="btn btn-small">إيقاف مؤقت</button>
+        </div>
+
+        <div id="reactions" class="reactions" aria-label="تفاعلات">
+          <button type="button" class="btn reaction-btn" data-emoji="👏" aria-label="تصفيق">👏</button>
+          <button type="button" class="btn reaction-btn" data-emoji="😂" aria-label="ضحك">😂</button>
+          <button type="button" class="btn reaction-btn" data-emoji="😱" aria-label="دهشة">😱</button>
+          <button type="button" class="btn reaction-btn" data-emoji="🔥" aria-label="حماس">🔥</button>
+          <button type="button" class="btn reaction-btn" data-emoji="🤯" aria-label="ذهول">🤯</button>
+          <button type="button" class="btn reaction-btn" data-emoji="👍" aria-label="إعجاب">👍</button>
+        </div>
+        <div id="reaction-layer" class="reaction-layer" aria-hidden="true"></div>
+
+        <p id="status-line" class="status-line" aria-live="polite"></p>
+      </section>
+
+      <!-- ============ النتائج ============ -->
+      <section id="screen-results" class="screen" hidden aria-label="النتائج">
+        <h2>النتائج</h2>
+        <div id="standings" class="standings"></div>
+        <h3>إحصائياتك</h3>
+        <div id="results-stats" class="results-stats"></div>
+        <h3>الأوسمة</h3>
+        <div id="badges" class="badges"></div>
+        <div class="results-actions">
+          <button type="button" id="btn-rematch" class="btn btn-primary btn-block">إعادة اللعب</button>
+          <button type="button" id="btn-replay-missed" class="btn btn-block">إعادة الأعلام الخاطئة</button>
+          <button type="button" id="btn-share-result" class="btn btn-block">مشاركة النتيجة</button>
+          <button type="button" id="btn-back-lobby" class="btn btn-block btn-ghost">العودة إلى الغرفة</button>
+          <button type="button" id="btn-back-home" class="btn btn-block btn-ghost">العودة إلى الرئيسية</button>
+        </div>
+        <h3>المتصدرون (محلي)</h3>
+        <div id="local-leaderboard" class="local-leaderboard"></div>
+      </section>
+
+      <!-- ============ شاشة العرض ============ -->
+      <section id="screen-display" class="screen display-screen" hidden aria-label="شاشة العرض">
+        <h2>شاشة العرض</h2>
+        <div class="display-join">
+          <label class="field-label" for="display-code">رمز الغرفة</label>
+          <input type="text" id="display-code" class="input" placeholder="رمز الغرفة" maxlength="12" autocomplete="off">
+          <button type="button" id="btn-display-join" class="btn btn-primary">عرض الغرفة</button>
+        </div>
+        <p class="muted">أدخل رمز الغرفة لعرض اللعبة على هذه الشاشة</p>
+        <div class="display-flag-wrap">
+          <img id="display-flag" class="flag-img display-flag" src="" alt="علم الدولة">
+        </div>
+        <div id="display-timer" class="display-timer" role="timer"></div>
+        <div id="display-scores" class="display-scores"></div>
+      </section>
+    </main>
+
+    <canvas id="confetti-canvas" class="confetti-canvas" aria-hidden="true"></canvas>
+    <div id="toast-area" class="toast-area" aria-live="polite"></div>
+  </div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
