@@ -795,6 +795,6 @@ process.on('unhandledRejection', (reason) => {
 
 // ------------------------------------------------------------------ listen
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   log('info', 'server_started', { port: PORT, env: NODE_ENV, flags: flagsStore.flagCount() });
 });
