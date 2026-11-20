@@ -20,6 +20,8 @@ const state = {
   secret: null,
   name: '',
   isHost: false,
+  judging: false,
+  judgeDecisions: {},
   isDisplay: false,
   settings: {},
   players: [],
@@ -325,7 +327,8 @@ function handleMessage(msg) {
       state.answered = true;
       state.myCorrect = msg.correct === true ? true : msg.correct === false ? false : null;
       state.myPoints = msg.points || 0;
-      setStatus(msg.accepted ? STR.answerReceived : STR.errorTooLate);
+      // وضع التقييم اليدوي: الإجابة وصلت فقط؛ لا صح/خطأ قبل انتهاء الوقت والتقييم.
+      setStatus(msg.pendingJudge ? STR.judgeSubmitted : (msg.accepted ? STR.answerReceived : STR.errorTooLate));
       if (msg.accepted === false && msg.correct === false && state.myChoiceIndex != null) {
         markOption(state.myChoiceIndex, 'wrong');
       }
@@ -347,6 +350,8 @@ function handleMessage(msg) {
 
     case 'q_reveal': {
       stopTimerLoop();
+      state.judging = false;
+      hideJudgePanel();
       if (msg.scores) {
         for (const s of msg.scores) {
           const p = state.players.find((x) => String(x.id) === String(s.playerId));
@@ -358,6 +363,33 @@ function handleMessage(msg) {
       showReveal(msg);
       if (state.myCorrect === true) sfx.play('correct');
       else if (state.myCorrect === false) sfx.play('wrong');
+      break;
+    }
+
+    case 'judging': {
+      // انتهى الوقت: الإجابات تُجمَع والمضيف يقيّمها. لا كشف للنتائج بعد.
+      state.judging = true;
+      hideJudgePanel();
+      setStatus(STR.judgeWaiting);
+      break;
+    }
+
+    case 'judge_request': {
+      // أنت المضيف: قيّم إجابات اللاعبين.
+      state.judging = true;
+      if (state.isHost) renderJudgePanel(msg);
+      else setStatus(STR.judgeWaiting);
+      break;
+    }
+
+    case 'judged': {
+      state.judging = false;
+      hideJudgePanel();
+      setStatus(msg.auto ? STR.judgeAuto : STR.judgeDone);
+      if (Array.isArray(msg.results)) {
+        const mine = msg.results.find((r) => String(r.playerId) === String(state.playerId));
+        if (mine) { state.myCorrect = !!mine.correct; state.myPoints = mine.points || 0; }
+      }
       break;
     }
 
@@ -581,12 +613,12 @@ function buildOptions(q) {
   const grid = $('options');
   const typingWrap = $('typing-wrap');
   const input = $('answer-input');
-  const useTyping = !q.options || q.options.length === 0 || state.settings.answerMode === 'typing';
+  const useTyping = !q.options || q.options.length === 0 || state.settings.answerMode === 'typing' || state.settings.answerMode === 'write_then_judge';
   if (grid) grid.textContent = '';
   if (useTyping) {
     if (grid) grid.hidden = true;
     if (typingWrap) typingWrap.hidden = false;
-    if (input) { input.value = ''; input.disabled = false; setTimeout(() => input.focus(), 50); }
+    if (input) { input.value = ''; input.disabled = false; setTimeout(() => input.focus({ preventScroll: true }), 50); }
     return;
   }
   if (grid) grid.hidden = false;
@@ -653,12 +685,76 @@ function onSubmitTyping() {
   const text = (input?.value || '').trim();
   if (!text) return;
   sfx.ensure();
-  const msg = { t: 'answer', questionId: state.currentQuestion.questionId, text };
+  const isJudge = state.settings.answerMode === 'write_then_judge';
+  const msg = { t: isJudge ? 'submit_text_answer' : 'answer', questionId: state.currentQuestion.questionId, text };
   if (state.transportKind === 'local') msg.playerId = currentAnswerPlayerId();
   send(msg);
   state.answered = true;
   lockOptions(true);
-  setStatus(STR.answerReceived);
+  setStatus(isJudge ? STR.judgeSubmitted : STR.answerReceived);
+}
+
+// ---------- لوحة تقييم المضيف (وضع write_then_judge) ----------
+function hideJudgePanel() {
+  const panel = $('judge-panel');
+  if (panel) panel.hidden = true;
+}
+
+function renderJudgePanel(msg) {
+  const panel = $('judge-panel');
+  if (!panel) return;
+  const list = $('judge-list');
+  const ref = $('judge-correct-answer');
+  if (ref) ref.textContent = msg.answerLabelAr || msg.answerLabelEn || '';
+  if (list) list.textContent = '';
+  state.judgeDecisions = {};
+  (msg.answers || []).forEach((a) => {
+    const row = document.createElement('div');
+    row.className = 'judge-row';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'judge-name';
+    nameEl.textContent = a.name || a.playerId;
+    const textEl = document.createElement('span');
+    textEl.className = 'judge-answer';
+    textEl.textContent = a.text || '—';
+    const hintEl = document.createElement('span');
+    hintEl.className = 'judge-hint';
+    hintEl.textContent = a.suggestedCorrect ? STR.judgeHintCorrect : STR.judgeHintWrong;
+    const btns = document.createElement('span');
+    btns.className = 'judge-buttons';
+    const mk = (label, val) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-small judge-btn';
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        state.judgeDecisions[a.playerId] = val;
+        btns.querySelectorAll('.judge-btn').forEach((x) => x.classList.remove('selected'));
+        b.classList.add('selected');
+      });
+      return b;
+    };
+    btns.appendChild(mk(STR.judgeCorrect, true));
+    btns.appendChild(mk(STR.judgeWrong, false));
+    row.appendChild(nameEl);
+    row.appendChild(textEl);
+    row.appendChild(hintEl);
+    row.appendChild(btns);
+    if (list) list.appendChild(row);
+  });
+  panel.hidden = false;
+  const confirm = $('btn-judge-confirm');
+  if (confirm) {
+    confirm.onclick = () => {
+      const decisions = (msg.answers || []).map((a) => {
+        const v = state.judgeDecisions[a.playerId];
+        return { playerId: a.playerId, correct: v === true };
+      });
+      send({ t: 'host_judge', questionId: msg.questionId, decisions });
+      hideJudgePanel();
+      setStatus(STR.judgeDone);
+    };
+  }
 }
 
 function showReveal(msg) {
@@ -847,7 +943,7 @@ function readName() {
   const name = (input?.value || '').trim();
   if (!name) {
     showToast(STR.nameRequired);
-    input?.focus();
+    input?.focus({ preventScroll: true });
     return null;
   }
   state.name = name;
@@ -884,7 +980,7 @@ async function joinRoom(codeOverride) {
   const name = readName();
   if (!name) return;
   const code = (codeOverride || $('join-code')?.value || '').trim().toUpperCase();
-  if (!code) { showToast(STR.codeRequired); $('join-code')?.focus(); return; }
+  if (!code) { showToast(STR.codeRequired); $('join-code')?.focus({ preventScroll: true }); return; }
   sfx.ensure();
   try {
     const t = await ensureWs();
@@ -997,6 +1093,9 @@ function bindEvents() {
   });
 
   // تغييرات إعدادات المضيف تُرسل فوراً.
+  // ROOT FIX (scroll bug, form): لوحة الإعدادات <form> بلا معالج submit؛
+  // Enter داخل حقل كان يرسل النموذج ويعيد تحميل الصفحة إلى الأعلى.
+  $('settings-panel')?.addEventListener('submit', (e) => e.preventDefault());
   document.querySelectorAll('#settings-panel input, #settings-panel select').forEach((el) => {
     el.addEventListener('change', () => {
       if (!state.isHost) return;

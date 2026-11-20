@@ -205,6 +205,7 @@ function buildSnapshot(room, forPlayerId = null, extra = {}) {
     role: p.role,
     team: p.team ?? null,
     alive: p.alive ?? true,
+    isHost: p.id === room.hostId,
   }));
   const snap = {
     t: 'room_snapshot',
@@ -596,6 +597,28 @@ function handleMessage(ws, conn, msg) {
         questionId: msg.questionId,
       }, Date.now());
       sendJson(ws, { t: 'answer_ack', questionId: msg.questionId, ...ack });
+      return;
+    }
+    case 'submit_text_answer': {
+      const room = requireRoom(ws, conn);
+      if (!room) return;
+      // نص فقط: لا choiceIndex في وضع التقييم اليدوي.
+      const ack = roomManager.submitAnswer(room, conn.playerId, {
+        text: msg.text,
+        questionId: msg.questionId,
+      }, Date.now());
+      sendJson(ws, { t: 'answer_ack', questionId: msg.questionId, ...ack });
+      return;
+    }
+    case 'host_judge':
+    case 'judge_answers': {
+      const room = requireRoom(ws, conn);
+      if (!room) return;
+      try {
+        roomManager.applyHostJudgement(room, conn.playerId, msg.decisions, msg.questionId);
+      } catch (e) {
+        sendError(ws, e.code || 'judge_failed', e.message || 'تعذر التقييم');
+      }
       return;
     }
     case 'skip_vote': {

@@ -17,6 +17,9 @@ import {
   advance,
   serializePublic,
   checkAnswer,
+  collectTextAnswers,
+  applyJudgements,
+  isJudgeMode,
 } from '../../shared/engine.js';
 
 // --- قائمة احتياطية صغيرة (تُستخدم فقط إن تعذر المحرك المشترك) ---
@@ -88,6 +91,8 @@ class FallbackHost {
     this.firstCorrectId = null;
     this.questionId = 0;
     this.missed = [];
+    this.judging = false;
+    this.judged = false;
   }
 
   clearTimers() {
@@ -155,7 +160,9 @@ class FallbackHost {
     const showAt = Date.now() + 600;
     const endsAt = showAt + durationMs;
     this.questionId += 1;
-    this.current = { country, options, durationMs, showAt, endsAt, answered: new Set(), firstCorrectId: null, startAt: showAt };
+    this.current = { country, options, durationMs, showAt, endsAt, answered: new Set(), firstCorrectId: null, startAt: showAt, textAnswers: new Map() };
+    this.judging = false;
+    this.judged = false;
     this.buzzLock = null;
     for (const p of this.players) p.answered = false;
     this.phase = 'playing';
@@ -197,6 +204,15 @@ class FallbackHost {
     p.answered = true;
     p.answeredCount += 1;
     const now = Date.now();
+    // وضع التقييم اليدوي (محلي): تُسجَّل الإجابة فقط؛ يقيّمها صاحب الجهاز بعد الوقت.
+    if (this.settings.answerMode === 'write_then_judge' && typeof payload.text === 'string') {
+      const t = normText(payload.text);
+      const suggested = t !== '' && (normText(q.country.ar) === t || normText(q.country.en) === t);
+      q.textAnswers.set(playerId, { playerId, name: p.name, text: payload.text.trim(), atMs: now, suggestedCorrect: suggested });
+      this.emit({ t: 'answer_ack', accepted: true, correct: null, points: 0, locked: true, pendingJudge: true, questionId: this.questionId, playerId });
+      this.emit({ t: 'player_answered', playerId, questionId: this.questionId });
+      return;
+    }
     const elapsed = Math.max(0, now - q.startAt);
     let correct = false;
     if (typeof payload.choiceIndex === 'number') {
@@ -228,8 +244,64 @@ class FallbackHost {
     if (buzzerMode || allAnswered) this.revealNow();
   }
 
+  /** Apply the device owner's judgements, then reveal. */
+  judge(decisions) {
+    if (!this.judging || !this.current) return false;
+    const q = this.current;
+    const byId = new Map((decisions || []).map((d) => [d.playerId, d.correct === true]));
+    const results = [];
+    for (const [playerId, a] of q.textAnswers) {
+      const p = this.players.find((x) => x.id === playerId);
+      if (!p) continue;
+      const correct = byId.get(playerId) === true;
+      let points = 0;
+      if (correct) {
+        points = 100 + Math.round((Math.max(0, q.endsAt - a.atMs) / q.durationMs) * 100);
+        p.score += points; p.correct += 1; p.streak += 1;
+        p.bestStreak = Math.max(p.bestStreak, p.streak);
+        if (!q.firstCorrectId) q.firstCorrectId = playerId;
+      } else {
+        p.streak = 0;
+        if (this.settings.negativePoints) { points = -50; p.score = Math.max(0, p.score + points); }
+      }
+      results.push({ playerId, correct, points });
+    }
+    this.judging = false;
+    this.judged = true;
+    this.emit({ t: 'judged', questionId: this.questionId, results });
+    this.emit({ t: 'scores', scores: this.scores() });
+    this.revealNow();
+    return true;
+  }
+
   revealNow() {
     if (!this.current || this.phase !== 'playing') return;
+    // وضع التقييم اليدوي: عند انتهاء الوقت يقيّم صاحب الجهاز أولاً.
+    if (this.settings.answerMode === 'write_then_judge' && !this.judged && !this.judging) {
+      const q = this.current;
+      if (this.players.length <= 1 || q.textAnswers.size === 0) {
+        // فردي أو لا إجابات: صحّح تلقائياً.
+        for (const [playerId, a] of q.textAnswers) {
+          const p = this.players.find((x) => x.id === playerId);
+          if (!p || !a.suggestedCorrect) continue;
+          const points = 100 + Math.round((Math.max(0, q.endsAt - a.atMs) / q.durationMs) * 100);
+          p.score += points; p.correct += 1; p.streak += 1;
+          if (!q.firstCorrectId) q.firstCorrectId = playerId;
+        }
+        this.judged = true;
+      } else {
+        this.judging = true;
+        this.clearTimers();
+        const answers = [...q.textAnswers.values()];
+        this.emit({ t: 'judging', questionId: this.questionId, submittedCount: answers.length, submittedPlayerIds: answers.map((a) => a.playerId) });
+        this.emit({
+          t: 'judge_request', questionId: this.questionId, answers,
+          answerCode: q.country.code, answerLabelAr: q.country.ar, answerLabelEn: q.country.en,
+          capitalAr: q.country.capitalAr, capitalEn: q.country.capitalEn,
+        });
+        return;
+      }
+    }
     this.clearTimers();
     const q = this.current;
     if (q.firstCorrectId == null) this.missed.push(q.country.code);
@@ -327,6 +399,8 @@ class EngineHost {
     this.questionId = 0;
     this.current = null;
     this.missed = [];
+    this.judging = false;
+    this.judged = false;
   }
 
   clearTimers() {
@@ -339,7 +413,10 @@ class EngineHost {
     try {
       const pub = typeof serializePublic === 'function' ? serializePublic(this.game) : null;
       const arr = pub?.players || pub?.room?.players || this.game?.players;
-      if (Array.isArray(arr)) return arr;
+      if (Array.isArray(arr)) {
+        const hostId = this.players[0] ? this.players[0].id : null;
+        return arr.map((pl) => ({ ...pl, isHost: String(pl.id) === String(hostId) }));
+      }
     } catch (_e) { /* ignore */ }
     return this.players;
   }
@@ -355,16 +432,18 @@ class EngineHost {
 
   create(settings, names) {
     this.settings = { ...(DEFAULT_SETTINGS || {}), ...(settings || {}) };
-    this.game = createGame(this.settings);
     this.players = (names || ['لاعب 1']).map((name, i) => ({
       id: 'local-p' + i, name: String(name || ('لاعب ' + (i + 1))),
       score: 0, isHost: i === 0, correct: 0, bestStreak: 0, fastestMs: null,
     }));
-    if (typeof this.game.addPlayer === 'function') {
-      for (const p of this.players) { try { this.game.addPlayer(p); } catch (_e) { /* ignore */ } }
-    } else if (Array.isArray(this.game.players) && this.game.players.length === 0) {
-      for (const p of this.players) this.game.players.push(p);
-    }
+    // ROOT FIX: pass the players INTO createGame so the engine normalizes
+    // them (alive/connected/score/streak/...). The old code created the
+    // game with no players and pushed raw objects afterwards, leaving
+    // alive/connected undefined — submitAnswer then rejected every local
+    // answer as 'eliminated', so local typing answers never reached the
+    // engine (only the checkAnswer fallback masked it in choice mode).
+    this.game = createGame(this.settings, this.players);
+    this.game.players.forEach((gp, i) => { gp.isHost = i === 0; });
     this.phase = 'lobby';
     this.missed = [];
     return this.snapshot();
@@ -386,6 +465,8 @@ class EngineHost {
     const endsAt = showAt + durationMs;
     this.questionId += 1;
     this.current = { q, durationMs, showAt, endsAt, answered: new Set() };
+    this.judging = false;
+    this.judged = false;
     const flagUrl = q.flagUrl || q.flag || (q.code ? '/flags/' + q.code + '.svg' : '');
     const options = (q.options || q.choices || []).map((o) => (
       typeof o === 'string' ? { code: o, labelAr: o, labelEn: o } : o
@@ -406,9 +487,14 @@ class EngineHost {
     q.answered.add(playerId);
     let res = null;
     try {
-      const ans = payload.choiceIndex != null ? payload.choiceIndex : payload.text;
-      res = submitAnswer(this.game, playerId, ans);
+      const ans = payload.choiceIndex != null ? { choiceIndex: payload.choiceIndex } : { text: payload.text };
+      res = submitAnswer(this.game, playerId, ans, Date.now());
     } catch (_e) { res = null; }
+    if (res && res.pendingJudge) {
+      this.emit({ t: 'answer_ack', accepted: true, correct: null, points: 0, locked: true, pendingJudge: true, questionId: this.questionId, playerId });
+      this.emit({ t: 'player_answered', playerId, questionId: this.questionId });
+      return; // لا كشف مبكر في وضع التقييم — ننتظر انتهاء الوقت.
+    }
     let correct = !!(res && (res.correct === true || res.isCorrect === true));
     if (res == null && typeof checkAnswer === 'function') {
       try {
@@ -423,8 +509,41 @@ class EngineHost {
     if (this._publicPlayers().every((p) => q.answered.has(String(p.id)))) this._reveal();
   }
 
+  /** Apply the device owner's judgements (local mode), then reveal. */
+  judge(decisions) {
+    if (!this.judging || !this.game) return false;
+    let result = null;
+    try { result = applyJudgements(this.game, decisions, Date.now()); } catch (_e) { return false; }
+    this.judging = false;
+    this.judged = true;
+    this.emit({ t: 'judged', questionId: this.questionId, results: result?.results ?? null });
+    this.emit({ t: 'scores', scores: this._publicPlayers().map((p) => ({ playerId: p.id, name: p.name, score: p.score || 0 })) });
+    this._reveal();
+    return true;
+  }
+
   _reveal() {
     if (!this.current) return;
+    // وضع التقييم اليدوي: عند انتهاء الوقت يقيّم صاحب الجهاز أولاً.
+    if (this.game && isJudgeMode(this.game) && !this.judged && !this.judging) {
+      const answers = collectTextAnswers(this.game);
+      if (this.players.length <= 1 || answers.length === 0) {
+        try { applyJudgements(this.game, answers.map((a) => ({ playerId: a.playerId, correct: !!a.suggestedCorrect })), Date.now()); } catch (_e) { /* ignore */ }
+        this.judged = true;
+      } else {
+        this.judging = true;
+        this.clearTimers();
+        const q = this.current.q;
+        this.emit({ t: 'judging', questionId: this.questionId, submittedCount: answers.length, submittedPlayerIds: answers.map((a) => a.playerId) });
+        this.emit({
+          t: 'judge_request', questionId: this.questionId, answers,
+          answerCode: q.code || q.answerCode || '',
+          answerLabelAr: q.answerLabelAr || q.labelAr || '', answerLabelEn: q.answerLabelEn || q.labelEn || '',
+          capitalAr: q.capitalAr || '', capitalEn: q.capitalEn || '',
+        });
+        return;
+      }
+    }
     this.clearTimers();
     let info = null;
     try { info = reveal(this.game); } catch (_e) { info = null; }
@@ -549,9 +668,16 @@ export class LocalTransport {
           if (this._host) this._host.start();
           break;
         case 'answer':
+        case 'submit_text_answer':
           if (this._host) {
             const playerId = msg.playerId || (this._host.players && this._host.players[0] ? this._host.players[0].id : 'local-p0');
             this._host.answer(playerId, { choiceIndex: msg.choiceIndex, text: msg.text });
+          }
+          break;
+        case 'host_judge':
+        case 'judge_answers':
+          if (this._host && typeof this._host.judge === 'function') {
+            this._host.judge(msg.decisions);
           }
           break;
         case 'buzz':

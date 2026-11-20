@@ -21,12 +21,16 @@ import {
   skipCurrent as engineSkipCurrent,
   serializePublic,
   getStandings,
+  collectTextAnswers,
+  applyJudgements,
+  isJudgeMode,
 } from '../shared/engine.js';
 import { COUNTRIES, CONTINENTS, byCode } from '../shared/countries.js';
 import { validateSettings as validateSettingsRanges } from './protocol.js';
 
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 export const ANSWER_GRACE_MS = 250;
+export const JUDGE_TIMEOUT_MS = 60_000;
 export const RESUME_WINDOW_MS = 90_000;
 export const SOLO_END_DELAY_MS = 60_000;
 export const READY_TIMEOUT_MS = 2000;
@@ -272,6 +276,9 @@ export class RoomManager {
       code,
       password: pw,
       hostId: null,
+      creatorId: null,
+      hostGraceTimer: null,
+      hostDisconnectedAt: null,
       players: new Map(),
       game: null,
       settings: roomSettings,
@@ -286,6 +293,10 @@ export class RoomManager {
       series: [],
       missedCodes: new Set(),
       questionTimer: null,
+      judging: null,
+      judgedForCurrent: false,
+      judgingTimer: null,
+      pendingReveal: null,
       readyTimer: null,
       advanceTimer: null,
       countdownTimer: null,
@@ -306,6 +317,7 @@ export class RoomManager {
     this.byCode.set(code, room);
     const player = this.addPlayer(room, { name, role: 'player' });
     room.hostId = player.id;
+    room.creatorId = player.id;
     this.onEvent?.(room, 'created', {});
     return { room, player };
   }
@@ -450,10 +462,73 @@ export class RoomManager {
         room.soloTimer = null;
       }
     }
-    // If the host is gone, the oldest connected player takes over.
-    const host = room.players.get(room.hostId);
-    if (!host || !host.connected) this.ensureHost(room, { silent: true });
+    // ROOT FIX (host never changes on join): joining / reconnecting must
+    // NEVER move the host. The host only changes on explicit transfer,
+    // explicit leave, or expiry of the 90s disconnect grace (see
+    // scheduleHostGrace). If this player IS the host, cancel any grace.
+    if (room.hostId === playerId) this.cancelHostGrace(room);
+    // Only when the room has no host at all (e.g. it was deleted) pick one.
+    if (!room.hostId) {
+      const candidates = [...room.players.values()]
+        .filter((x) => x.role === 'player' && x.connected)
+        .sort((a, b) => a.joinedAt - b.joinedAt);
+      if (candidates.length > 0) room.hostId = candidates[0].id;
+    }
     return true;
+  }
+
+  /** Cancel a pending host-grace transfer (host reconnected in time). */
+  cancelHostGrace(room) {
+    if (room.hostGraceTimer) {
+      clearTimeout(room.hostGraceTimer);
+      room.timers.delete(room.hostGraceTimer);
+      room.hostGraceTimer = null;
+    }
+    room.hostDisconnectedAt = null;
+  }
+
+  /**
+   * Host disconnected (not left): keep hostId for the 90s resume window.
+   * Only after the window expires without a reconnect does the oldest
+   * connected player take over. This is the root cause of «joiner becomes
+   * host»: the old code transferred the host the instant the creator's
+   * socket dropped (mobile network / tab switch / Codespaces), and the
+   * transfer was never undone when the creator came back.
+   */
+  scheduleHostGrace(room) {
+    if (room.hostGraceTimer) return;
+    room.hostDisconnectedAt = Date.now();
+    const timer = setTimeout(() => {
+      room.timers.delete(timer);
+      room.hostGraceTimer = null;
+      this.checkHostGrace(room);
+    }, RESUME_WINDOW_MS);
+    room.hostGraceTimer = timer;
+    room.timers.add(timer);
+  }
+
+  /** Transfer the host only if it is still disconnected past the grace window. */
+  checkHostGrace(room) {
+    const host = room.players.get(room.hostId);
+    if (host && host.connected) { room.hostDisconnectedAt = null; return room.hostId; }
+    if (host && host.disconnectedAt && Date.now() - host.disconnectedAt < RESUME_WINDOW_MS) {
+      this.scheduleHostGrace(room);
+      return room.hostId;
+    }
+    if (!host || !host.connected) {
+      this.ensureHost(room);
+      // If no connected host remains, auto-grade so judging never stalls.
+      this.autoJudgeIfNeeded(room);
+    }
+    return room.hostId;
+  }
+
+  /** If judging is in progress and there is no host left, auto-grade so the game never stalls. */
+  autoJudgeIfNeeded(room) {
+    if (!room.judging) return;
+    const host = room.players.get(room.hostId);
+    if (host && host.connected) return;
+    this.autoJudge(room, 'no-host');
   }
 
   disconnectPlayer(room, playerId) {
@@ -466,7 +541,8 @@ export class RoomManager {
     if (gp) gp.connected = false;
     this.touch(room);
 
-    if (room.hostId === playerId) this.ensureHost(room);
+    // Host disconnected: do NOT transfer immediately — give the 90s grace.
+    if (room.hostId === playerId) this.scheduleHostGrace(room);
 
     const connectedPlayers = [...room.players.values()].filter((x) => x.role === 'player' && x.connected);
     const anyConnected = [...room.players.values()].some((x) => x.connected);
@@ -520,7 +596,12 @@ export class RoomManager {
     const gp = room.game?.players?.find((x) => x.id === playerId);
     if (gp) gp.connected = false;
     this.touch(room);
-    if (room.hostId === playerId) this.ensureHost(room);
+    // Explicit leave (not a transient disconnect): transfer at once.
+    if (room.hostId === playerId) {
+      this.cancelHostGrace(room);
+      this.ensureHost(room);
+      this.autoJudgeIfNeeded(room);
+    }
     if (![...room.players.values()].some((x) => x.connected)) room.emptySince = Date.now();
     const connectedPlayers = [...room.players.values()].filter((x) => x.role === 'player' && x.connected);
     if (room.game && room.game.phase !== 'ended' && room.game.phase !== 'lobby'
@@ -546,6 +627,7 @@ export class RoomManager {
     if (candidates.length > 0) {
       room.hostId = candidates[0].id;
       if (!silent) this.broadcastSnapshot(room);
+      if (room.judging) this.notifyJudging(room);
     }
     return room.hostId;
   }
@@ -610,6 +692,7 @@ export class RoomManager {
    */
   engineSettings(room, override = null) {
     const s = { ...(room.settings || {}), ...(override || {}) };
+    if (s.answerMode === 'write_then_judge') { s.judgeMode = 'host'; }
     if (s.mode === 'classic' || s.mode === 'buzzer') s.mode = 'fixed';
     if (!ENGINE_MODES.has(s.mode)) s.mode = 'fixed';
     if (s.scoring) s.scoring = SCORING_MAP[s.scoring] ?? 'simple';
@@ -710,6 +793,14 @@ export class RoomManager {
     room.questionEnded = false;
     room.readySet = new Set();
     room.skipVotes = new Set();
+    room.judging = null;
+    room.judgedForCurrent = false;
+    room.pendingReveal = null;
+    if (room.judgingTimer) {
+      clearTimeout(room.judgingTimer);
+      room.timers.delete(room.judgingTimer);
+      room.judgingTimer = null;
+    }
     const q = question;
     const cur = room.game.current || {};
     const qid = q.id ?? q.questionId ?? `q${cur.index ?? room.game.round ?? 0}`;
@@ -762,7 +853,7 @@ export class RoomManager {
     const type = String(q.type ?? '');
     // Typing is chosen by the client's answerMode setting; in that case the
     // client shows a text input and needs no options at all.
-    const isTyping = room.game.settings?.answerMode === 'typing';
+    const isTyping = ['typing', 'write_then_judge'].includes(room.game.settings?.answerMode);
     let optionsOut = [];
     if (!isTyping) {
       optionsOut = opts.map((o) => {
@@ -889,6 +980,13 @@ export class RoomManager {
     if (!result || !result.accepted) {
       return { accepted: false, reason: result?.reason ?? 'rejected' };
     }
+    // وضع التقييم اليدوي: الإجابة تُسجَّل فقط — بلا تصحيح وبلا نقاط وبلا
+    // كشف مبكر. الجولة لا تنتهي قبل الوقت حتى لو أجاب الجميع.
+    if (result.pendingJudge) {
+      this.hooks.broadcast?.(room, { t: 'player_answered', playerId }, playerId);
+      this.touch(room);
+      return { accepted: true, correct: null, points: 0, locked: true, first: false, pendingJudge: true };
+    }
     this.syncScores(room);
     const ack = {
       accepted: true,
@@ -931,6 +1029,26 @@ export class RoomManager {
    */
   endQuestion(room, preReveal = null) {
     if (room.questionEnded || !room.game) return;
+    // --- وضع التقييم اليدوي: عند انتهاء الوقت لا تُكشف النتيجة فوراً، بل
+    // تُجمَع الإجابات وتُعرض على المضيف للتقييم أولاً. ---
+    if (isJudgeMode(room.game) && !room.judgedForCurrent && !room.judging && room.game.current) {
+      const connected = this.connectedPlayers(room);
+      const submitted = collectTextAnswers(room.game);
+      if (connected.length <= 1 || submitted.length === 0) {
+        // لاعب واحد أو لا إجابات: صحّح تلقائياً باقتراحات التطبيع.
+        try {
+          applyJudgements(room.game, submitted.map((a) => ({ playerId: a.playerId, correct: !!a.suggestedCorrect })), Date.now());
+        } catch {
+          // Fall through to reveal even if grading failed.
+        }
+        room.judgedForCurrent = true;
+        // Continue to the normal reveal path below.
+      } else {
+        if (preReveal) room.pendingReveal = preReveal;
+        this.startJudging(room);
+        return;
+      }
+    }
     room.questionEnded = true;
     if (room.questionTimer) {
       clearTimeout(room.questionTimer);
@@ -948,7 +1066,8 @@ export class RoomManager {
       room.earlyRevealTimer = null;
     }
     const now = Date.now();
-    let rev = preReveal;
+    let rev = preReveal ?? room.pendingReveal ?? null;
+    room.pendingReveal = null;
     if (!rev) {
       try {
         engineTimeoutQuestion(room.game, now);
@@ -958,6 +1077,14 @@ export class RoomManager {
       }
     }
     this.syncScores(room);
+    // If this reveal follows host judging, a stored preReveal (from a skip)
+    // carries pre-judgement scores — rebuild them live from the game.
+    if (room.judgedForCurrent && rev) {
+      rev = {
+        ...rev,
+        scores: clientStandings(room.game).map((pl) => ({ playerId: pl.playerId ?? pl.id, id: pl.id ?? pl.playerId, score: pl.score ?? 0 })),
+      };
+    }
     // The engine records missed questions in game.missedCodes (only when
     // nobody answered correctly); mirror the real country codes.
     try {
@@ -1020,6 +1147,114 @@ export class RoomManager {
     }, revealMs);
     room.advanceTimer = timer;
     room.timers.add(timer);
+  }
+
+  // ---------------------------------------------------------------------------
+  // التقييم اليدوي (وضع write_then_judge)
+  // ---------------------------------------------------------------------------
+
+  /** Start the judging phase: collect answers, notify everyone, ask the host. */
+  startJudging(room) {
+    const answers = collectTextAnswers(room.game);
+    room.judging = {
+      questionId: room.questionId,
+      answers,
+      startedAt: Date.now(),
+    };
+    this.hooks.broadcast?.(room, {
+      t: 'judging',
+      questionId: room.questionId,
+      submittedCount: answers.length,
+      submittedPlayerIds: answers.map((a) => a.playerId),
+    });
+    this.notifyJudging(room);
+    if (room.judgingTimer) {
+      clearTimeout(room.judgingTimer);
+      room.timers.delete(room.judgingTimer);
+    }
+    const timer = setTimeout(() => {
+      room.timers.delete(timer);
+      room.judgingTimer = null;
+      this.autoJudge(room, 'timeout');
+    }, JUDGE_TIMEOUT_MS);
+    room.judgingTimer = timer;
+    room.timers.add(timer);
+  }
+
+  /** Send the judge_request (answers + correct answer) to the current host only. */
+  notifyJudging(room) {
+    const j = room.judging;
+    if (!j) return;
+    const host = room.players.get(room.hostId);
+    if (!host || !host.connected) return;
+    const q = room.game?.current?.question ?? {};
+    const c = q.code ? safeByCode(q.code) : null;
+    this.hooks.sendTo?.(room, host.id, {
+      t: 'judge_request',
+      questionId: j.questionId,
+      answers: j.answers,
+      answerCode: q.code ?? null,
+      answerLabelAr: c?.nameAr ?? q.answerLabelAr ?? null,
+      answerLabelEn: c?.nameEn ?? q.answerLabelEn ?? null,
+      capitalAr: c?.capitalAr ?? null,
+      capitalEn: c?.capitalEn ?? null,
+    });
+  }
+
+  /** Host submits judgements; server validates host + coverage, then reveals. */
+  applyHostJudgement(room, byHostId, decisions, questionId = null) {
+    if (!room.judging) throw fail('not_judging', 'لا يوجد تقييم جارٍ الآن');
+    if (questionId && String(questionId) !== room.judging.questionId) {
+      throw fail('stale', 'هذا التقييم لسؤال قديم');
+    }
+    if (byHostId !== room.hostId) throw fail('not_host', 'التقييم للمضيف فقط');
+    const submitted = new Set(room.judging.answers.map((a) => a.playerId));
+    if (!Array.isArray(decisions) || decisions.length !== submitted.size
+      || decisions.some((d) => !submitted.has(d.playerId) || typeof d.correct !== 'boolean')) {
+      throw fail('invalid_judgement', 'القرارات يجب أن تغطي كل الإجابات المرسلة مرة واحدة');
+    }
+    if (room.judgingTimer) {
+      clearTimeout(room.judgingTimer);
+      room.timers.delete(room.judgingTimer);
+      room.judgingTimer = null;
+    }
+    let result;
+    try {
+      result = applyJudgements(room.game, decisions, Date.now());
+    } catch (e) {
+      throw fail('invalid_judgement', e.message || 'تعذر تطبيق التقييم');
+    }
+    const qid = room.judging.questionId;
+    room.judging = null;
+    room.judgedForCurrent = true;
+    this.syncScores(room);
+    this.hooks.broadcast?.(room, { t: 'judged', questionId: qid, results: result.results });
+    this.endQuestion(room);
+    return result;
+  }
+
+  /** Auto-grade with the normalization suggestion so the game never stalls. */
+  autoJudge(room, reason = 'timeout') {
+    if (!room.judging) return null;
+    const qid = room.judging.questionId;
+    const decisions = room.judging.answers.map((a) => ({ playerId: a.playerId, correct: !!a.suggestedCorrect }));
+    if (room.judgingTimer) {
+      clearTimeout(room.judgingTimer);
+      room.timers.delete(room.judgingTimer);
+      room.judgingTimer = null;
+    }
+    let result = null;
+    try {
+      result = applyJudgements(room.game, decisions, Date.now());
+    } catch {
+      // Fall through to reveal even if grading failed.
+    }
+    room.judging = null;
+    room.judgedForCurrent = true;
+    this.syncScores(room);
+    this.hooks.broadcast?.(room, { t: 'judged', questionId: qid, results: result?.results ?? null, auto: true, reason });
+    this.endQuestion(room);
+    return result;
   }
 
   /** Shared game_end payload, shaped for the web client. */
@@ -1341,6 +1576,9 @@ export class RoomManager {
     room.countdownTimer = null;
     room.earlyRevealTimer = null;
     room.soloTimer = null;
+    room.judgingTimer = null;
+    room.hostGraceTimer = null;
+    room.judging = null;
   }
 
   closeRoom(room, reason = 'closed') {

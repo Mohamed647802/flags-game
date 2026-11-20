@@ -3,7 +3,16 @@
 
 export const SCREENS = ['home', 'lobby', 'play', 'results', 'display'];
 
+// ROOT FIX (scroll-to-top bug): the old code called window.scrollTo({top:0})
+// on EVERY showScreen() call — and showScreen() runs on every room_snapshot
+// (join / leave / any settings click), every q_start, and every result
+// transition, so any click anywhere snapped the page back to the top.
+// Scroll to top ONLY when the screen actually changes; re-rendering the
+// same screen (lobby refresh, new question) must keep the scroll position.
+let currentScreen = null;
+
 export function showScreen(name) {
+  const changed = currentScreen !== name;
   for (const s of SCREENS) {
     const el = document.getElementById('screen-' + s);
     if (!el) continue;
@@ -13,7 +22,8 @@ export function showScreen(name) {
   }
   const app = document.getElementById('app');
   if (app) app.dataset.screen = name;
-  window.scrollTo({ top: 0 });
+  if (changed) window.scrollTo({ top: 0, behavior: 'instant' });
+  currentScreen = name;
 }
 
 // --- لوحة النقاط: تُبنى الصفوف مرة واحدة، ثم تُحدَّث نصاً وكلاسات فقط ---

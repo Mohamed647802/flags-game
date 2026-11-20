@@ -753,3 +753,13 @@ select.input { appearance: auto; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* --- لوحة تقييم المضيف (وضع write_then_judge) --- */
+.judge-panel { border: 2px solid var(--accent, #f59e0b); border-radius: 12px; padding: 12px; margin: 12px 0; background: var(--card, rgba(255,255,255,.06)); }
+.judge-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.judge-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid rgba(128,128,128,.25); padding-bottom: 8px; }
+.judge-name { font-weight: 700; min-width: 90px; }
+.judge-answer { flex: 1; min-width: 120px; }
+.judge-hint { font-size: .85em; opacity: .75; }
+.judge-buttons { display: flex; gap: 6px; }
+.judge-btn.selected { outline: 2px solid currentColor; font-weight: 700; }

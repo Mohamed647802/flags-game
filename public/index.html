@@ -123,6 +123,7 @@
                 <option value="choice">اختيارات</option>
                 <option value="typing">كتابة</option>
                 <option value="mixed">مختلط</option>
+                <option value="write_then_judge">كتابة ثم تقييم بعد الوقت (المضيف يصحّح)</option>
               </select>
             </label>
             <label class="field">نظام النقاط
@@ -234,6 +235,14 @@
           <label class="field-label sr-only" for="answer-input">اكتب اسم الدولة…</label>
           <input type="text" id="answer-input" class="input" placeholder="اكتب اسم الدولة…" autocomplete="off">
           <button type="button" id="btn-answer-submit" class="btn btn-primary">إرسال الإجابة</button>
+        </div>
+
+        <div id="judge-panel" class="judge-panel" hidden>
+          <h3>تقييم الإجابات — أنت المضيف</h3>
+          <p class="muted">الإجابة الصحيحة: <strong id="judge-correct-answer"></strong></p>
+          <p class="muted">علّم كل إجابة صح أو خطأ ثم اضغط تأكيد. التلميح (اقتراح تلقائي) ليس قراراً — قرارك نهائي.</p>
+          <div id="judge-list" class="judge-list"></div>
+          <button type="button" id="btn-judge-confirm" class="btn btn-primary">تأكيد التقييم وعرض النتيجة</button>
         </div>
 
         <div id="reveal-info" class="reveal-info" hidden>

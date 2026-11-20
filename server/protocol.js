@@ -6,7 +6,8 @@ export const MAX_MESSAGE_BYTES = 4096;
 const MESSAGE_TYPES = new Set([
   'hello', 'resume', 'ping', 'create_room', 'join_room', 'leave',
   'set_settings', 'set_team', 'kick', 'transfer_host', 'start', 'ready',
-  'answer', 'skip_vote', 'pause', 'resume_game', 'skip_flag',
+  'answer', 'submit_text_answer', 'host_judge', 'judge_answers',
+  'skip_vote', 'pause', 'resume_game', 'skip_flag',
   'rematch', 'replay_missed', 'react',
 ]);
 
@@ -17,7 +18,7 @@ const MODES = new Set([
   'classic', 'buzzer', 'turns',
   'race', 'fixed', 'sudden', 'teams', 'survival', 'daily', 'kids', 'solo',
 ]);
-const ANSWER_MODES = new Set(['choice', 'typing', 'mixed']);
+const ANSWER_MODES = new Set(['choice', 'typing', 'mixed', 'write_then_judge']);
 const ANSWER_TYPES = new Set(['country', 'capital', 'continent', 'mixed', 'choice']);
 const SCORINGS = new Set(['classic', 'streak', 'fixed', 'simple', 'speed']);
 const QUESTION_TYPE_TOKENS = new Set([
@@ -315,6 +316,34 @@ export function validateClientMessage(raw) {
       case 'ready': {
         if (!isIdString(msg.questionId)) {
           return err('invalid_field', 'معرّف السؤال غير صالح');
+        }
+        break;
+      }
+      case 'submit_text_answer': {
+        if (!isIdString(msg.questionId)) {
+          return err('invalid_field', 'معرّف السؤال غير صالح');
+        }
+        if (typeof msg.text !== 'string' || msg.text.trim().length < 1 || msg.text.length > 40) {
+          return err('invalid_answer', 'نص الإجابة يجب أن يكون من حرف إلى 40 حرفاً');
+        }
+        msg = { ...msg, text: msg.text.trim() };
+        break;
+      }
+      case 'host_judge':
+      case 'judge_answers': {
+        if (!isIdString(msg.questionId)) {
+          return err('invalid_field', 'معرّف السؤال غير صالح');
+        }
+        if (!Array.isArray(msg.decisions) || msg.decisions.length < 1 || msg.decisions.length > 8) {
+          return err('invalid_judgement', 'قرارات التقييم غير صالحة');
+        }
+        const seen = new Set();
+        for (const d of msg.decisions) {
+          if (!isPlainObject(d) || !isIdString(d.playerId) || typeof d.correct !== 'boolean') {
+            return err('invalid_judgement', 'قرار تقييم غير صالح');
+          }
+          if (seen.has(d.playerId)) return err('invalid_judgement', 'قرار مكرر لنفس اللاعب');
+          seen.add(d.playerId);
         }
         break;
       }

@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   difficulty: 'mixed',
   questionTypes: ['flag-country'],
   hint: true,
+  judgeMode: 'auto',
   negativePoints: false,
   lateJoin: false,
   seed: null,
@@ -35,6 +36,9 @@ export const DEFAULT_SETTINGS = {
 
 function normalizeSettings(input) {
   const s = { ...DEFAULT_SETTINGS, ...(input || {}) };
+  // وضع «كتابة ثم تقييم»: الإجابات نصية وتُصحَّح يدوياً من المضيف بعد الوقت.
+  if (s.answerMode === 'write_then_judge') s.judgeMode = 'host';
+  if (s.judgeMode === 'host') s.answerMode = 'write_then_judge';
   s.continents = [...(s.continents || [])];
   s.questionTypes = [...(s.questionTypes || ['flag-country'])];
   if (s.questionTypes.length === 0) s.questionTypes = ['flag-country'];
@@ -337,6 +341,114 @@ export function checkAnswer(question, payload) {
 }
 
 // ---------------------------------------------------------------------------
+// التقييم اليدوي (وضع write_then_judge)
+// ---------------------------------------------------------------------------
+
+/** True when this game is in host-judged write mode. */
+export function isJudgeMode(game) {
+  return game?.settings?.judgeMode === 'host' || game?.settings?.answerMode === 'write_then_judge';
+}
+
+/** Text answers submitted for the current question, with a suggested verdict. */
+export function collectTextAnswers(game) {
+  const cur = game?.current;
+  if (!cur) return [];
+  const out = [];
+  for (const p of game.players) {
+    const a = cur.answers[p.id];
+    if (a && a.pendingJudge && typeof a.text === 'string') {
+      out.push({
+        playerId: p.id, name: p.name, text: a.text, atMs: a.atMs,
+        suggestedCorrect: checkAnswer(cur.question, { text: a.text }),
+      });
+    }
+  }
+  out.sort((x, y) => x.atMs - y.atMs);
+  return out;
+}
+
+/**
+ * Apply the host's judgements for the current question.
+ * decisions: [{ playerId, correct }] — must cover every submitted answer.
+ * Players who submitted nothing are marked wrong. Points use the same
+ * scoring as a normal correct answer, timed from the submission moment.
+ * Returns { results, correctCount }.
+ */
+export function applyJudgements(game, decisions, nowMs) {
+  const cur = game.current;
+  if (!cur) throw new Error('no current question');
+  const byId = new Map((decisions || []).map((d) => [d.playerId, d]));
+  const results = [];
+  let correctCount = 0;
+  const sudden = game.settings.mode === 'sudden' || game.settings.mode === 'survival';
+  const kids = game.settings.mode === 'kids';
+  const ordered = [...game.players].sort((a, b) => {
+    const aa = cur.answers[a.id]?.atMs ?? Infinity;
+    const bb = cur.answers[b.id]?.atMs ?? Infinity;
+    return aa - bb;
+  });
+  for (const player of ordered) {
+    const ans = cur.answers[player.id];
+    if (ans && ans.pendingJudge) {
+      const d = byId.get(player.id);
+      if (!d || typeof d.correct !== 'boolean') throw new Error(`missing judgement for ${player.id}`);
+      ans.pendingJudge = false;
+      ans.locked = true;
+      if (d.correct) {
+        correctCount += 1;
+        const streakBefore = player.streak;
+        let points;
+        if (game.settings.scoring === 'speed') {
+          const dur = durationMs(game) || game.settings.durationSec * 1000;
+          const remaining = cur.endsAt === null ? dur : Math.max(0, cur.endsAt - ans.atMs);
+          points = speedScore(remaining, dur, streakBefore, false);
+        } else {
+          points = scoreSimple();
+        }
+        player.score += points;
+        player.correct += 1;
+        player.streak = streakBefore + 1;
+        player.bestStreak = Math.max(player.bestStreak, player.streak);
+        const elapsed = ans.atMs - cur.startedAt;
+        if (player.fastestMs === null || elapsed < player.fastestMs) player.fastestMs = elapsed;
+        const cont = byCode(cur.question.code)?.continent;
+        if (cont) player.correctByContinent[cont] = (player.correctByContinent[cont] || 0) + 1;
+        if (cur.firstCorrectId === null) cur.firstCorrectId = player.id;
+        ans.correct = true;
+        ans.points = points;
+        game.history.push({ round: game.round, playerId: player.id, correct: true, points, atMs: ans.atMs, type: cur.question.type });
+        if (game.settings.scoring === 'simple') cur.roundOver = true;
+        if (game.settings.mode === 'race' && player.score >= game.settings.raceTarget) game.pendingEnd = true;
+        results.push({ playerId: player.id, correct: true, points });
+      } else {
+        player.wrong += 1;
+        player.streak = 0;
+        let points = 0;
+        if (game.settings.negativePoints && game.settings.scoring === 'speed' && !kids) {
+          player.score = Math.max(0, player.score - 25);
+          points = -25;
+        }
+        ans.correct = false;
+        ans.points = points;
+        if (sudden && !kids) player.alive = false;
+        game.history.push({ round: game.round, playerId: player.id, correct: false, points, atMs: ans.atMs, type: cur.question.type });
+        results.push({ playerId: player.id, correct: false, points });
+      }
+    } else if (!ans) {
+      // لم يجب أصلاً: خطأ بدون نقاط.
+      player.wrong += 1;
+      player.streak = 0;
+      cur.answers[player.id] = { correct: false, points: 0, atMs: nowMs, attempts: 0, locked: true, lastAttemptAt: nowMs, timedOut: true };
+      if (sudden && !kids) player.alive = false;
+      results.push({ playerId: player.id, correct: false, points: 0, noAnswer: true });
+    }
+    // إجابات choice/locked قديمة في هذا السؤال لا تحدث في وضع التقييم.
+  }
+  if (correctCount === 0 && cur.question.code) game.missedCodes.push(cur.question.code);
+  return { results, correctCount };
+}
+
+// ---------------------------------------------------------------------------
 // Game lifecycle
 // ---------------------------------------------------------------------------
 
@@ -456,7 +568,7 @@ function allAliveAnswered(game) {
   if (alive.length === 0) return false;
   return alive.every((p) => {
     const a = game.current.answers[p.id];
-    return a && (a.correct || a.locked);
+    return a && (a.correct || a.locked || a.pendingJudge || a.submitted);
   });
 }
 
@@ -477,6 +589,21 @@ export function submitAnswer(game, playerId, payload, nowMs) {
   const prev = cur.answers[playerId];
   if (prev && prev.correct) return { accepted: false, reason: 'already-answered' };
   if (prev && prev.locked) return { accepted: false, reason: 'locked' };
+  if (prev && prev.pendingJudge) return { accepted: false, reason: 'already-answered' };
+  // --- وضع التقييم اليدوي: تُسجَّل الإجابة النصية فقط، بلا تصحيح ولا نقاط ---
+  if (game.settings.judgeMode === 'host') {
+    if (payload?.choiceIndex !== undefined && payload?.choiceIndex !== null) {
+      return { accepted: false, reason: 'invalid_answer' };
+    }
+    const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
+    if (!text) return { accepted: false, reason: 'invalid_answer' };
+    cur.answers[playerId] = {
+      text, submitted: true, pendingJudge: true, correct: null, points: 0,
+      atMs: nowMs, attempts: 1, locked: true, lastAttemptAt: nowMs,
+    };
+    player.answered = true;
+    return { accepted: true, correct: null, points: 0, pendingJudge: true, first: false, locked: true, eliminated: false, allAnswered: allAliveAnswered(game) };
+  }
   if (cur.roundOver && game.settings.scoring === 'simple') {
     return { accepted: false, reason: 'round-over' };
   }
@@ -572,6 +699,12 @@ export function timeoutQuestion(game, nowMs) {
   if (!cur) return { eliminatedIds };
   const sudden = game.settings.mode === 'sudden' || game.settings.mode === 'survival';
   const kids = game.settings.mode === 'kids';
+  // في وضع التقييم اليدوي: لا يُحسم شيء هنا؛ التصحيح (ومن لم يجب أصلاً)
+  // يتم في applyJudgements بعد انتهاء الوقت، وإلا ضاعت الإجابات.
+  if (game.settings.judgeMode === 'host') {
+    cur.roundOver = true;
+    return { eliminatedIds, pendingJudge: true };
+  }
   const anyoneCorrect = Object.values(cur.answers).some((a) => a.correct);
   if (!anyoneCorrect && cur.question.code) game.missedCodes.push(cur.question.code);
   for (const p of game.players) {
